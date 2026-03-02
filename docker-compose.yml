@@ -1,7 +1,3 @@
-# This is your workspace for the assignment.
-# PostgreSQL is provided for your solution.
-# Add your services as needed.
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -18,26 +14,144 @@ services:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 20
     networks:
       - assignment-network
 
-  # Add your ingestion service(s) here
-  # Example:
-  #
-  # ingestion:
-  #   build: ./packages/ingestion
-  #   container_name: assignment-ingestion
-  #   environment:
-  #     DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ingestion
-  #     API_BASE_URL: https://datasync-api.example.com
-  #     TARGET_API_KEY: your_api_key_here
-  #     # Note: Use header-based auth (X-API-Key header) for best rate limits
-  #   depends_on:
-  #     postgres:
-  #       condition: service_healthy
-  #   networks:
-  #     - assignment-network
+  datasync-mock:
+    build:
+      context: .
+      dockerfile: mock-api/Dockerfile
+    container_name: assignment-datasync-mock
+    environment:
+      MOCK_TOTAL_EVENTS: ${MOCK_TOTAL_EVENTS:-50000}
+      MOCK_DEFAULT_PAGE_SIZE: ${MOCK_DEFAULT_PAGE_SIZE:-5000}
+      MOCK_RATE_LIMIT_RPS: ${MOCK_RATE_LIMIT_RPS:-200}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health >/dev/null || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks:
+      - assignment-network
+  temporal-ui:
+    image: temporalio/ui:latest
+    container_name: assignment-temporal-ui
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    ports:
+      - "8088:8080"
+    depends_on:
+      temporal:
+        condition: service_started
+    networks:
+      - assignment-network
+  temporal:
+    image: temporalio/temporal:latest
+    container_name: assignment-temporal
+    command:
+      [
+        "server",
+        "start-dev",
+        "--ip",
+        "0.0.0.0"
+      ]
+    ports:
+      - "7233:7233"
+      - "8233:8233"
+    healthcheck:
+      test: ["CMD-SHELL", "temporal operator cluster health --address 127.0.0.1:7233 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks:
+      - assignment-network
+
+  ingestion-worker:
+    build:
+      context: .
+      dockerfile: packages/ingestion/Dockerfile
+    container_name: assignment-ingestion-worker
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ingestion
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_NAMESPACE: default
+      TEMPORAL_TASK_QUEUE: datasync-ingestion
+      API_BASE_URL: ${API_BASE_URL:-http://datasync-dev-alb-101078500.us-east-1.elb.amazonaws.com/api/v1}
+      TARGET_API_KEY: ${TARGET_API_KEY:-}
+      API_PAGE_SIZE: ${API_PAGE_SIZE:-5000}
+      API_RATE_LIMIT_REQUESTS: ${API_RATE_LIMIT_REQUESTS:-10}
+      API_RATE_LIMIT_WINDOW_SECONDS: ${API_RATE_LIMIT_WINDOW_SECONDS:-10}
+      API_MIN_TIME_MS: ${API_MIN_TIME_MS:-1500}
+      API_MAX_RETRIES: ${API_MAX_RETRIES:-6}
+      API_TIMEOUT_MS: ${API_TIMEOUT_MS:-30000}
+      INGESTION_RUN_ID: ${INGESTION_RUN_ID:-datasync-ingestion-main}
+      INGESTION_WORKFLOW_ID: ${INGESTION_WORKFLOW_ID:-datasync-ingestion-workflow}
+      INGESTION_ACTIVITY_PARALLELISM: ${INGESTION_ACTIVITY_PARALLELISM:-2}
+      INGESTION_WORKER_CONCURRENCY: ${INGESTION_WORKER_CONCURRENCY:-2}
+      INGESTION_MAX_SEGMENT_RETRIES: ${INGESTION_MAX_SEGMENT_RETRIES:-8}
+      INGESTION_STALE_SEGMENT_SECONDS: ${INGESTION_STALE_SEGMENT_SECONDS:-180}
+      INGESTION_EXPECTED_EVENTS: ${INGESTION_EXPECTED_EVENTS:-3000000}
+      INGESTION_CURSOR_SHARDS: ${INGESTION_CURSOR_SHARDS:-2}
+      INGESTION_CURSOR_WINDOW_START: ${INGESTION_CURSOR_WINDOW_START:-}
+      INGESTION_CURSOR_WINDOW_END: ${INGESTION_CURSOR_WINDOW_END:-}
+      INGESTION_TEST_MAX_API_CALLS: ${INGESTION_TEST_MAX_API_CALLS:-0}
+      INGESTION_PROGRESS_LOG_INTERVAL_MS: ${INGESTION_PROGRESS_LOG_INTERVAL_MS:-5000}
+    command: ["sh", "-c", "npm run migrate && npm run worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      datasync-mock:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - assignment-network
+
+  ingestion-runner:
+    build:
+      context: .
+      dockerfile: packages/ingestion/Dockerfile
+    container_name: assignment-ingestion
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ingestion
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_NAMESPACE: default
+      TEMPORAL_TASK_QUEUE: datasync-ingestion
+      API_BASE_URL: ${API_BASE_URL:-http://datasync-dev-alb-101078500.us-east-1.elb.amazonaws.com/api/v1}
+      TARGET_API_KEY: ${TARGET_API_KEY:-}
+      API_PAGE_SIZE: ${API_PAGE_SIZE:-5000}
+      API_RATE_LIMIT_REQUESTS: ${API_RATE_LIMIT_REQUESTS:-10}
+      API_RATE_LIMIT_WINDOW_SECONDS: ${API_RATE_LIMIT_WINDOW_SECONDS:-10}
+      API_MIN_TIME_MS: ${API_MIN_TIME_MS:-1500}
+      API_MAX_RETRIES: ${API_MAX_RETRIES:-6}
+      API_TIMEOUT_MS: ${API_TIMEOUT_MS:-30000}
+      INGESTION_RUN_ID: ${INGESTION_RUN_ID:-datasync-ingestion-main}
+      INGESTION_WORKFLOW_ID: ${INGESTION_WORKFLOW_ID:-datasync-ingestion-workflow}
+      INGESTION_ACTIVITY_PARALLELISM: ${INGESTION_ACTIVITY_PARALLELISM:-2}
+      INGESTION_WORKER_CONCURRENCY: ${INGESTION_WORKER_CONCURRENCY:-2}
+      INGESTION_MAX_SEGMENT_RETRIES: ${INGESTION_MAX_SEGMENT_RETRIES:-8}
+      INGESTION_STALE_SEGMENT_SECONDS: ${INGESTION_STALE_SEGMENT_SECONDS:-180}
+      INGESTION_EXPECTED_EVENTS: ${INGESTION_EXPECTED_EVENTS:-3000000}
+      INGESTION_CURSOR_SHARDS: ${INGESTION_CURSOR_SHARDS:-2}
+      INGESTION_CURSOR_WINDOW_START: ${INGESTION_CURSOR_WINDOW_START:-}
+      INGESTION_CURSOR_WINDOW_END: ${INGESTION_CURSOR_WINDOW_END:-}
+      INGESTION_TEST_MAX_API_CALLS: ${INGESTION_TEST_MAX_API_CALLS:-0}
+      INGESTION_PROGRESS_LOG_INTERVAL_MS: ${INGESTION_PROGRESS_LOG_INTERVAL_MS:-5000}
+    command: ["sh", "-c", "npm run migrate && npm run start-and-wait"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      datasync-mock:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+      ingestion-worker:
+        condition: service_started
+    restart: "no"
+    networks:
+      - assignment-network
 
 volumes:
   assignment_postgres_data:

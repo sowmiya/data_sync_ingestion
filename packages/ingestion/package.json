@@ -1,0 +1,29 @@
+{
+  "name": "datasync-ingestion",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "migrate": "tsx src/cli-migrate.ts",
+    "worker": "tsx src/worker.ts",
+    "start-and-wait": "tsx src/start-and-wait.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@temporalio/activity": "^1.15.0",
+    "@temporalio/client": "^1.15.0",
+    "@temporalio/worker": "^1.15.0",
+    "@temporalio/workflow": "^1.15.0",
+    "axios": "^1.9.0",
+    "axios-retry": "^4.5.0",
+    "bottleneck": "^2.19.5",
+    "pg": "^8.14.1",
+    "tsx": "^4.20.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.24",
+    "typescript": "^5.8.3"
+  },
+  "overrides": {
+    "serialize-javascript": "7.0.3"
+  }
+}
