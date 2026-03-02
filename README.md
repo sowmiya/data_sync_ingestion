@@ -81,13 +81,12 @@ docker logs -f assignment-ingestion-worker
 
 ## Any discoveries about the API?
 
-There were 5 key discoveries about the API:
+There were 4 key discoveries about the API:
 
 1) The `limit` can be set as high as `5000`, reducing total requests to `3,000,000 / 5,000 = 600`.
 2) All 3M events are concentrated in July 21-31, 2026 (an 11-day window).
 3) Cursors are unsigned base64 JSON, so they are craftable for partitioning and parallel fetch planning.
-4) The API is sorted newest-first, and cursor `ts` behaves as a seek position.
-5) Rate limiting is approximately 10 requests per sliding window.
+4) Rate limiting is approximately 10 requests per sliding window.
 
 ## What you would improve with more time?
 
