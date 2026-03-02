@@ -22,62 +22,77 @@ This repository is organized as a production-style ingestion system using **Temp
 - `docker-compose.yml` - Postgres + Temporal + worker + runner services
 - `run-ingestion.sh` - one-command runner + progress monitor
 
-## Run
+## How to run your solution?
 
-1. Add your API key:
+1. Create `.env` and set credentials:
 
 ```bash
 cp .env.example .env
 # edit .env and set TARGET_API_KEY
 ```
 
-2. Run ingestion:
+2. Run the full stack (Postgres + Temporal + worker + runner):
 
 ```bash
 sh run-ingestion.sh
 ```
 
-Local end-to-end test mode (no external API traffic):
+3. Run local end-to-end test mode without external API traffic:
 
 ```bash
-USE_MOCK_API=1 MOCK_TOTAL_EVENTS=20000 sh run-ingestion.sh
+USE_MOCK_API=1 MOCK_TOTAL_EVENTS=20000 INGESTION_RUN_ID=mock-test-1 sh run-ingestion.sh
 ```
 
-This starts all services in Docker and continuously prints:
+4. Optional one-worker debug mode:
 
-- total events stored in `events`
-- segment completion progress
-- run status and events/sec
-- worker health (active/stale workers)
+```bash
+INGESTION_ACTIVITY_PARALLELISM=1 INGESTION_WORKER_CONCURRENCY=1 INGESTION_CURSOR_SHARDS=1 sh run-ingestion.sh
+```
 
-## Temporal orchestration model
+5. Watch worker logs:
 
-- **Workflow**: `ingestionWorkflow`
-  - Plans strategy (page-based when supported, cursor fallback)
-  - Claims work segments from PostgreSQL checkpoints
-  - Runs segment ingestion activities in parallel
-  - Updates progress and run throughput
-  - Marks run `completed` or `failed`
+```bash
+docker logs -f assignment-ingestion-worker
+```
 
-- **Activities**
-  - `planRun`: detect API capabilities and seed segments
-  - `claimSegments`: atomically claim pending/failed/stale segments
-  - `ingestSegment`: fetch page/cursor data and insert events
-  - `getProgress` / `evaluateRun` / `updateRunRps`
+## Architecture overview
 
-- **Resumability**
-  - Temporal persists workflow execution state
-  - PostgreSQL stores per-segment status, retries, and cursor checkpoints
-  - Stale in-progress segments are reclaimed automatically
-  - Event writes are idempotent (`ON CONFLICT DO NOTHING`)
+- **Temporal workflow (`ingestionWorkflow`)**
+  - Plans the run strategy and segments.
+  - Claims segments from PostgreSQL.
+  - Executes ingestion activities.
+  - Tracks progress and marks run completed/failed.
+- **Activities (`packages/ingestion/src/activities.ts`)**
+  - `planRun`, `claimSegments`, `ingestSegment`, `getProgress`, `evaluateRun`, `updateRunRps`.
+  - Cursor strategy supports resumability via checkpointed `last_cursor`.
+- **PostgreSQL**
+  - Stores events in partitioned `events` table.
+  - Stores run state in `ingestion_runs`, segment checkpoints/retries in `ingestion_segments`, and health in `worker_heartbeats`.
+  - Event writes are idempotent with `ON CONFLICT (event_id, timestamp) DO NOTHING`.
+- **Runner/Worker split**
+  - Runner starts/attaches to workflow and monitors progress.
+  - Worker executes activities and sends heartbeats.
+- **Rate limiting**
+  - Global Bottleneck limiter with sliding-window settings:
+    - `API_RATE_LIMIT_REQUESTS`
+    - `API_RATE_LIMIT_WINDOW_SECONDS`
+    - `API_MIN_TIME_MS`
+  - Uses `X-RateLimit-*` headers and cooldowns on 429.
 
-## Throughput and limits
+## Any discoveries about the API?
 
-- Global API rate limiting is handled with Bottleneck (`API_RATE_LIMIT_RPS`)
-- Parallelism is controlled with:
-  - `INGESTION_ACTIVITY_PARALLELISM`
-  - `INGESTION_WORKER_CONCURRENCY`
-- Bulk inserts are chunked for PostgreSQL parameter limits
+There were 5 key discoveries about the API:
+
+1) The `limit` can be set as high as `5000`, reducing total requests to `3,000,000 / 5,000 = 600`.
+2) All 3M events are concentrated in July 21-31, 2026 (an 11-day window).
+3) Cursors are unsigned base64 JSON, so they are craftable for partitioning and parallel fetch planning.
+4) The API is sorted newest-first, and cursor `ts` behaves as a seek position.
+5) Rate limiting is approximately 10 requests per sliding window.
+
+## What you would improve with more time?
+
+Without parallelism: 600 requests sequential = ~10 minutes
+With 11 parallel workers: 55 requests each = ~1 minute. We would need to stagger worker startup in this case so we don't hit the ceiling on requests/window.
 
 ## Useful SQL checks
 
